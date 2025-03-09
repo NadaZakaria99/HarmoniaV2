@@ -1,0 +1,32 @@
+# Core Dependencies
+google-generativeai
+networkx
+spacy
+PyPDF2
+langchain-openai
+langchain
+pydantic
+matplotlib
+leidenalg
+python-arango
+nx_arangodb
+langchain-google-genai
+langchain-experimental
+arangodb
+nx-arangodb
+pyArango
+gradio
+
+# GPU-specific Dependencies (Optional, requires CUDA-capable GPU)
+cugraph-cu12 --extra-index-url=https://pypi.nvidia.com
+cudf
+cugraph
+cuml
+nx-cugraph-cu12 --extra-index-url=https://pypi.nvidia.com
+
+# LangChain & LangGraph
+langchain-community
+langgraph
+
+# Spacy Model (Run separately after installation)
+# !python -m spacy download en_core_web_sm
