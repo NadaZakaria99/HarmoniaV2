@@ -17,8 +17,14 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import PromptTemplate
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import cugraph
-import cudf
+import spacy
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    # If the model is not found, download it
+    from spacy.cli import download
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
 
 # Hard-coded Gemini API key
 GEMINI_API_KEY = "AIzaSyAQuMQ9ARr_qaKk38dT9GaYCNOOfFztgQQ"
@@ -273,8 +279,6 @@ def prepare_graph_from_pdf(pdf_path):
 
     return graph, section_map
 
-
-
 def persist_to_arangodb(graph, db_name="TherapyChatbot"):
     try:
         # Connect to ArangoDB
@@ -347,7 +351,6 @@ def run_aql_query(db, query, bind_vars=None):
         print(f"AQL query error: {e}")
         return []
 
-# Tool 1: Simple keyword search
 # Tool 1: Simple keyword search
 def create_keyword_search_tool(db, section_map):
     def keyword_search(keyword):
@@ -551,84 +554,7 @@ def create_resource_recommendation_tool(db, section_map, graph=None, has_gpu=Fal
 
         return response
 
-
     return recommend_therapy_resources
-
-# Tool 2: Entity relationship search
-
-def create_entity_search_tool(db, section_map, graph=None):
-    def entity_relationship_search(entity_name):
-        if db:
-            # Use correct collection names with prefixes
-            entity_query = """
-            FOR node IN TherapyKnowledgeGraph_nodes
-                FILTER node.type == 'entity' AND LOWER(node.name) == LOWER(@entity_name)
-                RETURN node
-            """
-            # Remove comments before executing the query
-            entity_query = "\n".join([line for line in entity_query.split("\n") if not line.strip().startswith("#")])
-
-            entities = run_aql_query(db, entity_query, bind_vars={"entity_name": entity_name})
-
-            if not entities:
-                return f"No information found about '{entity_name}'."
-
-            # Get related sections
-            related_query = """
-            FOR entity IN TherapyKnowledgeGraph_nodes
-                FILTER entity.type == 'entity' AND LOWER(entity.name) == LOWER(@entity_name)
-                FOR v, e IN 1..1 OUTBOUND entity TherapyKnowledgeGraph_edges
-                    FILTER v.type == 'section'
-                    RETURN {
-                        section_id: v._id,
-                        section_text: v.text,
-                        section_key: v._key
-                    }
-            """
-            # Remove comments before executing the query
-            related_query = "\n".join([line for line in related_query.split("\n") if not line.strip().startswith("#")])
-
-            related_sections = run_aql_query(db, related_query, bind_vars={"entity_name": entity_name})
-
-            if not related_sections:
-                return f"Found entity '{entity_name}' but no related information."
-
-            # Combine results
-            result = f"Information about '{entity_name}':\n\n"
-            for i, section in enumerate(related_sections):
-                result += f"Context {i+1}: {section['section_text']}\n\n"
-
-            return result
-        elif graph:
-            # Fallback to in-memory graph
-            entity_nodes = [n for n, data in graph.nodes(data=True)
-                          if data.get('type') == 'entity' and data.get('name', '').lower() == entity_name.lower()]
-
-            if not entity_nodes:
-                return f"No information found about '{entity_name}'."
-
-            related_sections = []
-            for entity_node in entity_nodes:
-                for neighbor in graph.neighbors(entity_node):
-                    if graph.nodes[neighbor].get('type') == 'section':
-                        section_id = neighbor
-                        if section_id in section_map:
-                            related_sections.append(section_map[section_id])
-
-            if not related_sections:
-                return f"Found entity '{entity_name}' but no related information."
-
-            # Combine results
-            result = f"Information about '{entity_name}':\n\n"
-            for i, section_text in enumerate(related_sections):
-                result += f"Context {i+1}: {section_text}\n\n"
-
-            return result
-        else:
-            return "Entity search unavailable without graph data."
-
-    return entity_relationship_search
-
 
 # Tool 4: Hybrid query for complex questions
 def create_hybrid_query_tool(db, section_map, graph=None, has_gpu=False):
@@ -642,9 +568,7 @@ def create_hybrid_query_tool(db, section_map, graph=None, has_gpu=False):
                 template="""
                 Extract the main entities, concepts, and keywords from this therapy-related question.
                 Focus on identifying mental health-related terms such as anxiety, depression, trauma, etc.
-
                 Question: {question}
-
                 Return the output as a comma-separated list of relevant words or phrases.
                 """
             )
@@ -683,12 +607,9 @@ def create_hybrid_query_tool(db, section_map, graph=None, has_gpu=False):
                 You are a compassionate therapy chatbot specialized in providing support for issues related to mental health.
                 Use the following contextual information to provide a helpful, supportive response to the user's question.
                 Always maintain a therapeutic, empathetic tone, and prioritize the user's wellbeing.
-
                 Context information:
                 {context}
-
                 User's question: {question}
-
                 Provide a detailed response that addresses their concerns using relevant information from the context.
                 Never invent information not present in the context. If you're unsure, acknowledge limitations and suggest
                 seeking professional help. Focus on providing emotional support and practical guidance based on the context.
@@ -712,9 +633,6 @@ import traceback
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("therapy_chatbot")
 
-# The issue is that create_gradio_interface isn't returning the Gradio interface properly
-# Here's the corrected version:
-
 def create_gradio_interface(agent_executor, db, section_map, graph=None):
     # Create tool instances for direct access
     keyword_search = create_keyword_search_tool(db, section_map)
@@ -733,9 +651,8 @@ def create_gradio_interface(agent_executor, db, section_map, graph=None):
             # Format chat history correctly for LangChain
             formatted_chat_history = []
             for user_msg, ai_msg in agent_chat_history:
-                # Convert to proper LangChain message objects
                 formatted_chat_history.append(HumanMessage(content=user_msg))
-                if ai_msg:  # Check if ai_msg is not None
+                if ai_msg:
                     formatted_chat_history.append(AIMessage(content=ai_msg))
 
             # Try direct tool calls to diagnose issues
@@ -764,114 +681,161 @@ def create_gradio_interface(agent_executor, db, section_map, graph=None):
             # Update the agent chat history with the new interaction
             agent_chat_history.append((message, output))
 
-            # Return only the bot's response - Gradio will handle the history
-            return output
+            # Add empathetic and supportive tone to the response
+            empathetic_response = add_empathetic_tone(output)
+            return empathetic_response
 
         except Exception as e:
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
             return f"I'm sorry, I encountered an error while processing your request. Please try again with a different question or phrasing."
 
+    def add_empathetic_tone(response):
+        """Add empathetic and supportive tone to the response"""
+        # Crisis handling
+        if "immediate danger" in response.lower() or "crisis" in response.lower():
+            return "Your safety is the priority. Please contact a crisis hotline or emergency services right away. You’re not alone, and help is available."
+
+        # General empathetic response structure
+        empathetic_response = (
+            f"I hear how challenging this is for you. {response} "
+            "Remember, you’re not alone, and it’s okay to take small steps. "
+            "I’m here to support you every step of the way."
+        )
+        return empathetic_response
+
+    # Custom CSS for the background image and centered text
+    custom_css = """
+    body {
+        background-image: url('https://huggingface.co/spaces/Nadaazakaria/HarmoniaV2/resolve/main/Harmonia.png');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        height: 100vh;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+    }
+    .gradio-container {
+        background-color: rgba(255, 255, 255, 0.8);
+        padding: 20px;
+        border-radius: 10px;
+        max-width: 800px;
+        width: 90%;
+        height: auto;
+        overflow-y: auto;
+    }
+    .center-text {
+        text-align: center;
+        margin: 0 auto;
+    }
+    """
+
     # Create the Gradio interface with additional features
-    demo = gr.Blocks(theme=gr.themes.Soft())
-    
+    demo = gr.Blocks(theme=gr.themes.Soft(), css=custom_css)
+
     with demo:
-        gr.Markdown("# Therapy Support Chatbot")
-        gr.Markdown("Ask questions about mental health, trauma, coping strategies, and more. I'm here to provide support and information.")
+        # Centered text container
+        with gr.Column(elem_classes="center-text"):
+            gr.Markdown("# Harmonia🌸")
+            gr.Markdown("""
+            🌸 Hello, I'm Harmonia. 🌸  
+            I’m here to provide a safe, non-judgmental space for you to express your feelings, explore your thoughts, and receive support. Whether you're dealing with stress, anxiety, relationship issues, or just need someone to talk to, I'm here to listen and help you navigate your emotions. Together, we’ll explore what’s on your mind and work towards finding peace and clarity. Remember, you’re not alone, and it’s okay to ask for help. Whenever you’re ready, we can begin. 💬
+            """)
 
-        chatbot = gr.Chatbot(height=600)
-        msg = gr.Textbox(placeholder="Type your message here...", container=False)
-        clear = gr.Button("Clear conversation")
+        # Chatbot and other components
+        with gr.Column():
+            chatbot = gr.Chatbot(height=400)  # Adjust height as needed
+            msg = gr.Textbox(placeholder="Type your message here...", container=False)
+            clear = gr.Button("Clear conversation")
 
-        # Example questions as buttons
-        gr.Markdown("## Example Questions")
-        with gr.Row():
-            q1 = gr.Button("What resources do you have for coping with trauma?")
-            q2 = gr.Button("I feel anxious all the time, and it's affecting my sleep.")
-        with gr.Row():
-            q3 = gr.Button("What are some strategies for dealing with grief?")
-            q4 = gr.Button("How can I support a friend who experienced violence?")
+            # Example questions as buttons
+            gr.Markdown("## Suggestions")
+            with gr.Row():
+                q1 = gr.Button("What resources do you have for coping with trauma?")
+                q2 = gr.Button("How can I manage anxiety?")
+            with gr.Row():
+                q3 = gr.Button("What are some strategies for dealing with grief?")
+                q4 = gr.Button("How can I support a friend who experienced violence?")
 
-        # Handle standard input submission
-        def user_input(user_message, history):
-            return "", history + [[user_message, None]]
+            # Handle standard input submission
+            def user_input(user_message, history):
+                return "", history + [[user_message, None]]
 
-        def bot_response(history):
-            user_message = history[-1][0]
-            bot_message = respond(user_message, history[:-1])
-            history[-1][1] = bot_message
-            return history
+            def bot_response(history):
+                user_message = history[-1][0]
+                bot_message = respond(user_message, history[:-1])
+                history[-1][1] = bot_message
+                return history
 
-        # Set up event handlers for text input
-        msg.submit(user_input, [msg, chatbot], [msg, chatbot]).then(
-            bot_response, [chatbot], [chatbot]
-        )
+            # Set up event handlers for text input
+            msg.submit(user_input, [msg, chatbot], [msg, chatbot]).then(
+                bot_response, [chatbot], [chatbot]
+            )
 
-        # Clear conversation
-        clear.click(lambda: [], None, [chatbot])
+            # Clear conversation
+            clear.click(lambda: [], None, [chatbot])
 
-        # Handle example buttons - fixed approach
-        def use_example(example_text, history):
-            """Handle example button clicks properly"""
-            return example_text, history + [[example_text, None]]
+            # Handle example buttons
+            def use_example(example_text, history):
+                return example_text, history + [[example_text, None]]
 
-        # Connect example buttons to the chatbot
-        q1.click(
-            use_example,
-            inputs=[gr.Textbox(value="What resources do you have for coping with trauma?", visible=False), chatbot],
-            outputs=[msg, chatbot]
-        ).then(
-            bot_response, [chatbot], [chatbot]
-        )
+            q1.click(
+                use_example,
+                inputs=[gr.Textbox(value="What resources do you have for coping with trauma?", visible=False), chatbot],
+                outputs=[msg, chatbot]
+            ).then(
+                bot_response, [chatbot], [chatbot]
+            )
 
-        q2.click(
-            use_example,
-            inputs=[gr.Textbox(value="I feel anxious all the time, and it's affecting my sleep.", visible=False), chatbot],
-            outputs=[msg, chatbot]
-        ).then(
-            bot_response, [chatbot], [chatbot]
-        )
+            q2.click(
+                use_example,
+                inputs=[gr.Textbox(value="How can I manage anxiety?", visible=False), chatbot],
+                outputs=[msg, chatbot]
+            ).then(
+                bot_response, [chatbot], [chatbot]
+            )
 
-        q3.click(
-            use_example,
-            inputs=[gr.Textbox(value="What are some strategies for dealing with grief?", visible=False), chatbot],
-            outputs=[msg, chatbot]
-        ).then(
-            bot_response, [chatbot], [chatbot]
-        )
+            q3.click(
+                use_example,
+                inputs=[gr.Textbox(value="What are some strategies for dealing with grief?", visible=False), chatbot],
+                outputs=[msg, chatbot]
+            ).then(
+                bot_response, [chatbot], [chatbot]
+            )
 
-        q4.click(
-            use_example,
-            inputs=[gr.Textbox(value="How can I support a friend who experienced violence?", visible=False), chatbot],
-            outputs=[msg, chatbot]
-        ).then(
-            bot_response, [chatbot], [chatbot]
-        )
+            q4.click(
+                use_example,
+                inputs=[gr.Textbox(value="How can I support a friend who experienced violence?", visible=False), chatbot],
+                outputs=[msg, chatbot]
+            ).then(
+                bot_response, [chatbot], [chatbot]
+            )
 
-        # Debug section (hidden in production)
-        with gr.Accordion("Debug Tools", open=False):
-            gr.Markdown("This section is for debugging purposes only.")
-            debug_input = gr.Textbox(placeholder="Enter text to test direct tool calls")
-            debug_output = gr.Textbox(label="Tool Output")
+            # Debug section (hidden in production)
+            with gr.Accordion("Debug Tools", open=False):
+                gr.Markdown("This section is for debugging purposes only.")
+                debug_input = gr.Textbox(placeholder="Enter text to test direct tool calls")
+                debug_output = gr.Textbox(label="Tool Output")
 
-            def test_tools(text):
-                try:
-                    # Try each tool directly
-                    keyword_result = keyword_search(text)
-                    entity_result = entity_search(text)
-                    resource_result = resource_recommendation(text)
-                    hybrid_result = hybrid_search(text)
+                def test_tools(text):
+                    try:
+                        keyword_result = keyword_search(text)
+                        entity_result = entity_search(text)
+                        resource_result = resource_recommendation(text)
+                        hybrid_result = hybrid_search(text)
+                        return f"KEYWORD SEARCH:\n{keyword_result}\n\nENTITY SEARCH:\n{entity_result}\n\nRESOURCE RECOMMENDATION:\n{resource_result}\n\nHYBRID SEARCH:\n{hybrid_result}"
+                    except Exception as e:
+                        return f"Error testing tools: {str(e)}\n{traceback.format_exc()}"
 
-                    return f"KEYWORD SEARCH:\n{keyword_result}\n\nENTITY SEARCH:\n{entity_result}\n\nRESOURCE RECOMMENDATION:\n{resource_result}\n\nHYBRID SEARCH:\n{hybrid_result}"
-                except Exception as e:
-                    return f"Error testing tools: {str(e)}\n{traceback.format_exc()}"
-
-            debug_button = gr.Button("Test Tools Directly")
-            debug_button.click(test_tools, [debug_input], [debug_output])
+                debug_button = gr.Button("Test Tools Directly")
+                debug_button.click(test_tools, [debug_input], [debug_output])
 
     # Make sure to return the demo object
     return demo
-# Modify your main function to pass the required objects to create_gradio_interface
 def main(pdf_path):
     print("Starting therapy chatbot setup...")
     print(f"Reading PDF from: {pdf_path}")
@@ -922,19 +886,13 @@ def main(pdf_path):
     agent_prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a compassionate therapy chatbot designed to provide support and resources for people dealing with mental health and violence-related issues.
         You have access to a specialized knowledge base about violence, trauma, and healing resources.
-
         When interacting with users, maintain a supportive, non-judgmental tone at all times. Prioritize user safety and well-being.
         If someone appears to be in immediate danger, always encourage them to contact emergency services.
-
         Available Tools:
         {tools}
-
         Use these tools to provide helpful information and support. When using the tools, be specific about what information you need.
-
         IMPORTANT: If you can't find specific information with one tool, try the other tools, especially the ComplexQuestionAnswering tool which can combine information from multiple sources.
-
         Only provide a fallback response about seeing a therapist if you've tried ALL tools and none returned useful information.
-
         Tool Names: {tool_names}"""),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
