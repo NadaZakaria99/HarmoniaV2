@@ -27,7 +27,7 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 # Hard-coded Gemini API key
-GEMINI_API_KEY = "AIzaSyAQuMQ9ARr_qaKk38dT9GaYCNOOfFztgQQ"
+GEMINI_API_KEY = "Add Gemini API key"
 
 # Custom ArangoDB adapter to replace networkx_arangodb
 
@@ -282,10 +282,10 @@ def prepare_graph_from_pdf(pdf_path):
 def persist_to_arangodb(graph, db_name="TherapyChatbot"):
     try:
         # Connect to ArangoDB
-        client = ArangoClient(hosts="https://58b975cb67d1.arangodb.cloud:8529")
+        client = ArangoClient(hosts="https://Add_your")
 
         # Get the actual password from your ArangoDB dashboard
-        actual_password = "Ikc6YLfjixH3YR9SKS43"  # Replace with your real password
+        actual_password = "Replace with your real password"  
 
         # Create database if it doesn't exist
         sys_db = client.db("_system", username="root", password=actual_password)
